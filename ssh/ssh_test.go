@@ -21,14 +21,14 @@ import (
 	"github.com/cloudfoundry-incubator/cf-test-helpers/generator"
 	"github.com/cloudfoundry-incubator/cf-test-helpers/helpers"
 	"github.com/cloudfoundry-incubator/cf-test-helpers/runner"
+	"github.com/cloudfoundry/cf-acceptance-tests/helpers/app_helpers"
+	"github.com/cloudfoundry/cf-acceptance-tests/helpers/assets"
 	"github.com/kr/pty"
 	. "github.com/onsi/ginkgo"
 	ginkgoconfig "github.com/onsi/ginkgo/config"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gbytes"
 	. "github.com/onsi/gomega/gexec"
-	"github.com/cloudfoundry/cf-acceptance-tests/helpers/app_helpers"
-	"github.com/cloudfoundry/cf-acceptance-tests/helpers/assets"
 )
 
 var _ = Describe(deaUnsupportedTag+"SSH", func() {
@@ -43,7 +43,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 			"-b", "ruby_buildpack",
 			"-m", DEFAULT_MEMORY_LIMIT,
 			"-d", config.AppsDomain,
-			"-i", "2"),
+			"-i", "1"),
 			DEFAULT_TIMEOUT,
 		).Should(Exit(0))
 
@@ -52,9 +52,6 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 		enableSSH(appName)
 
 		Eventually(cf.Cf("start", appName), CF_PUSH_TIMEOUT).Should(Exit(0))
-		Eventually(func() string {
-			return helpers.CurlApp(appName, "/env/INSTANCE_INDEX")
-		}, DEFAULT_TIMEOUT).Should(Equal("1"))
 	})
 
 	AfterEach(func() {
@@ -63,25 +60,51 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 	})
 
 	Describe("ssh", func() {
+		Context("with multiple instances", func() {
+			BeforeEach(func() {
+				Eventually(cf.Cf("scale", appName, "-i", "2"), CF_PUSH_TIMEOUT).Should(Exit(0))
+				Eventually(func() string {
+					return helpers.CurlApp(appName, "/env/INSTANCE_INDEX")
+				}, DEFAULT_TIMEOUT).Should(Equal("1"))
+			})
+
+			It("can ssh to the second instance", func() {
+				envCmd := cf.Cf("ssh", "-i", "1", appName, "-c", "/usr/bin/env && /usr/bin/env >&2")
+				Expect(envCmd.Wait(DEFAULT_TIMEOUT)).To(Exit(0))
+
+				output := string(envCmd.Out.Contents())
+				stdErr := string(envCmd.Err.Contents())
+
+				Expect(string(output)).To(MatchRegexp(fmt.Sprintf(`VCAP_APPLICATION=.*"application_name":"%s"`, appName)))
+				Expect(string(output)).To(MatchRegexp("INSTANCE_INDEX=1"))
+
+				Expect(string(stdErr)).To(MatchRegexp(fmt.Sprintf(`VCAP_APPLICATION=.*"application_name":"%s"`, appName)))
+				Expect(string(stdErr)).To(MatchRegexp("INSTANCE_INDEX=1"))
+
+				Eventually(cf.Cf("logs", appName, "--recent"), DEFAULT_TIMEOUT).Should(Say("Successful remote access"))
+				Eventually(cf.Cf("events", appName), DEFAULT_TIMEOUT).Should(Say("audit.app.ssh-authorized"))
+			})
+		})
+
 		It("can execute a remote command in the container", func() {
-			envCmd := cf.Cf("ssh", "-i", "1", appName, "-c", "/usr/bin/env && /usr/bin/env >&2")
+			envCmd := cf.Cf("ssh", appName, "-c", "/usr/bin/env && /usr/bin/env >&2")
 			Expect(envCmd.Wait(DEFAULT_TIMEOUT)).To(Exit(0))
 
 			output := string(envCmd.Out.Contents())
 			stdErr := string(envCmd.Err.Contents())
 
 			Expect(string(output)).To(MatchRegexp(fmt.Sprintf(`VCAP_APPLICATION=.*"application_name":"%s"`, appName)))
-			Expect(string(output)).To(MatchRegexp("INSTANCE_INDEX=1"))
+			Expect(string(output)).To(MatchRegexp("INSTANCE_INDEX=0"))
 
 			Expect(string(stdErr)).To(MatchRegexp(fmt.Sprintf(`VCAP_APPLICATION=.*"application_name":"%s"`, appName)))
-			Expect(string(stdErr)).To(MatchRegexp("INSTANCE_INDEX=1"))
+			Expect(string(stdErr)).To(MatchRegexp("INSTANCE_INDEX=0"))
 
 			Eventually(cf.Cf("logs", appName, "--recent"), DEFAULT_TIMEOUT).Should(Say("Successful remote access"))
 			Eventually(cf.Cf("events", appName), DEFAULT_TIMEOUT).Should(Say("audit.app.ssh-authorized"))
 		})
 
 		It("runs an interactive session when no command is provided", func() {
-			envCmd := exec.Command("cf", "ssh", "-i", "1", appName)
+			envCmd := exec.Command("cf", "ssh", appName)
 
 			stdin, err := envCmd.StdinPipe()
 			Expect(err).NotTo(HaveOccurred())
@@ -105,14 +128,14 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(string(output)).To(MatchRegexp(fmt.Sprintf(`VCAP_APPLICATION=.*"application_name":"%s"`, appName)))
-			Expect(string(output)).To(MatchRegexp("INSTANCE_INDEX=1"))
+			Expect(string(output)).To(MatchRegexp("INSTANCE_INDEX=0"))
 
 			Eventually(cf.Cf("logs", appName, "--recent"), DEFAULT_TIMEOUT).Should(Say("Successful remote access"))
 			Eventually(cf.Cf("events", appName), DEFAULT_TIMEOUT).Should(Say("audit.app.ssh-authorized"))
 		})
 
 		It("allows local port forwarding", func() {
-			listenCmd := exec.Command("cf", "ssh", "-i", "1", "-L", "127.0.0.1:61007:localhost:8080", appName)
+			listenCmd := exec.Command("cf", "ssh", "-L", "127.0.0.1:61007:localhost:8080", appName)
 
 			stdin, err := listenCmd.StdinPipe()
 			Expect(err).NotTo(HaveOccurred())
@@ -136,7 +159,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 			password := sshAccessCode()
 
 			clientConfig := &ssh.ClientConfig{
-				User: fmt.Sprintf("cf:%s/%d", guidForAppName(appName), 1),
+				User: fmt.Sprintf("cf:%s/%d", guidForAppName(appName), 0),
 				Auth: []ssh.AuthMethod{ssh.Password(password)},
 			}
 
@@ -150,7 +173,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(string(output)).To(MatchRegexp(fmt.Sprintf(`VCAP_APPLICATION=.*"application_name":"%s"`, appName)))
-			Expect(string(output)).To(MatchRegexp("INSTANCE_INDEX=1"))
+			Expect(string(output)).To(MatchRegexp("INSTANCE_INDEX=0"))
 
 			Eventually(cf.Cf("logs", appName, "--recent"), DEFAULT_TIMEOUT).Should(Say("Successful remote access"))
 			Eventually(cf.Cf("events", appName), DEFAULT_TIMEOUT).Should(Say("audit.app.ssh-authorized"))
