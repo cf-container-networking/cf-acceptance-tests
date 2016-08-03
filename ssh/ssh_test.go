@@ -69,7 +69,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 			})
 
 			It("can ssh to the second instance", func() {
-				envCmd := cf.Cf("ssh", "-i", "1", appName, "-c", "/usr/bin/env && /usr/bin/env >&2")
+				envCmd := cf.Cf("ssh", "-v", "-i", "1", appName, "-c", "/usr/bin/env && /usr/bin/env >&2")
 				Expect(envCmd.Wait(DEFAULT_TIMEOUT)).To(Exit(0))
 
 				output := string(envCmd.Out.Contents())
@@ -87,7 +87,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 		})
 
 		It("can execute a remote command in the container", func() {
-			envCmd := cf.Cf("ssh", appName, "-c", "/usr/bin/env && /usr/bin/env >&2")
+			envCmd := cf.Cf("ssh", "-v", appName, "-c", "/usr/bin/env && /usr/bin/env >&2")
 			Expect(envCmd.Wait(DEFAULT_TIMEOUT)).To(Exit(0))
 
 			output := string(envCmd.Out.Contents())
@@ -104,7 +104,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 		})
 
 		It("runs an interactive session when no command is provided", func() {
-			envCmd := exec.Command("cf", "ssh", appName)
+			envCmd := exec.Command("cf", "ssh", "-v", appName)
 
 			stdin, err := envCmd.StdinPipe()
 			Expect(err).NotTo(HaveOccurred())
@@ -135,7 +135,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 		})
 
 		It("allows local port forwarding", func() {
-			listenCmd := exec.Command("cf", "ssh", "-L", "127.0.0.1:61007:localhost:8080", appName)
+			listenCmd := exec.Command("cf", "ssh", "-v", "-L", "127.0.0.1:61007:localhost:8080", appName)
 
 			stdin, err := listenCmd.StdinPipe()
 			Expect(err).NotTo(HaveOccurred())
@@ -169,7 +169,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 			session, err := client.NewSession()
 			Expect(err).NotTo(HaveOccurred())
 
-			output, err := session.Output("/usr/bin/env")
+			output, err := session.CombinedOutput("/usr/bin/env")
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(string(output)).To(MatchRegexp(fmt.Sprintf(`VCAP_APPLICATION=.*"application_name":"%s"`, appName)))
@@ -242,6 +242,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 			password := sshAccessCode() + "\n"
 
 			cmd := exec.Command(scpPath,
+				"-vvv",
 				"-r",
 				"-P", sshPort,
 				fmt.Sprintf("-oUser=cf:%s/0", guidForAppName(appName)),
@@ -338,6 +339,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 
 			cmd := exec.Command(
 				sftpPath,
+				"-v",
 				"-P", sshPort,
 				"-oUserKnownHostsFile=/dev/null",
 				"-oStrictHostKeyChecking=no",
