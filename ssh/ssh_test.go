@@ -331,6 +331,8 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 			sshHost, sshPort, err := net.SplitHostPort(sshProxyAddress())
 			Expect(err).NotTo(HaveOccurred())
 
+			// Create pty pseudo-terminal so that ptyMaster can input password when
+			// prompted
 			ptyMaster, ptySlave, err := pty.Open()
 			Expect(err).NotTo(HaveOccurred())
 			defer ptyMaster.Close()
