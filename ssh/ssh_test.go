@@ -1,18 +1,11 @@
 package ssh
 
 import (
-	"bytes"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
-	"net"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -23,7 +16,6 @@ import (
 	"github.com/cloudfoundry-incubator/cf-test-helpers/runner"
 	"github.com/cloudfoundry/cf-acceptance-tests/helpers/app_helpers"
 	"github.com/cloudfoundry/cf-acceptance-tests/helpers/assets"
-	"github.com/kr/pty"
 	. "github.com/onsi/ginkgo"
 	ginkgoconfig "github.com/onsi/ginkgo/config"
 	. "github.com/onsi/gomega"
@@ -195,146 +187,7 @@ var _ = Describe(deaUnsupportedTag+"SSH", func() {
 		})
 	})
 
-	Describe("sftp", func() {
-		var (
-			sourceDir, targetDir             string
-			generatedFile, generatedFileName string
-			generatedFileInfo                os.FileInfo
-			err                              error
-		)
-
-		BeforeEach(func() {
-			Expect(err).NotTo(HaveOccurred())
-
-			sourceDir, err = ioutil.TempDir("", "sftp-source")
-			Expect(err).NotTo(HaveOccurred())
-
-			fileContents := make([]byte, 1024)
-			b, err := rand.Read(fileContents)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(b).To(Equal(len(fileContents)))
-
-			generatedFileName = "binary.dat"
-			generatedFile = filepath.Join(sourceDir, generatedFileName)
-
-			err = ioutil.WriteFile(generatedFile, fileContents, 0644)
-			Expect(err).NotTo(HaveOccurred())
-
-			generatedFileInfo, err = os.Stat(generatedFile)
-			Expect(err).NotTo(HaveOccurred())
-
-			targetDir, err = ioutil.TempDir("", "sftp-target")
-			Expect(err).NotTo(HaveOccurred())
-
-			Eventually(func() string {
-				return helpers.CurlApp(appName, "/env/INSTANCE_INDEX")
-			}, DEFAULT_TIMEOUT).Should(Equal("0"))
-		})
-
-		runSftp := func(stdin io.Reader) *Buffer {
-			sshHost, sshPort, err := net.SplitHostPort(sshProxyAddress())
-			Expect(err).NotTo(HaveOccurred())
-
-			// Create pty pseudo-terminal so that ptyMaster can input password when
-			// prompted
-			ptyMaster, ptySlave, err := pty.Open()
-			Expect(err).NotTo(HaveOccurred())
-			defer ptyMaster.Close()
-
-			password := sshAccessCode() + "\n"
-
-			cmd := exec.Command(
-				sftpPath,
-				"-v",
-				"-P", sshPort,
-				"-oUserKnownHostsFile=/dev/null",
-				"-oStrictHostKeyChecking=no",
-				fmt.Sprintf("cf:%s/0@%s", guidForAppName(appName), sshHost),
-			)
-
-			cmd.Stdin = ptySlave
-			cmd.Stdout = ptySlave
-			cmd.Stderr = ptySlave
-
-			cmd.SysProcAttr = &syscall.SysProcAttr{
-				Setctty: true,
-				Setsid:  true,
-			}
-
-			sayCommandRun(cmd)
-			session, err := Start(cmd, GinkgoWriter, GinkgoWriter)
-			Expect(err).NotTo(HaveOccurred())
-
-			// Close our open reference to ptySlave so that PTY Master recieves EOF
-			ptySlave.Close()
-
-			sendPassword(ptyMaster, password)
-
-			done := make(chan struct{})
-			go func() {
-				io.Copy(GinkgoWriter, ptyMaster)
-				close(done)
-			}()
-
-			go func() {
-				io.Copy(ptyMaster, stdin)
-				ptyMaster.Write([]byte("exit\n"))
-			}()
-
-			Eventually(done, DEFAULT_TIMEOUT).Should(BeClosed())
-			Eventually(session, DEFAULT_TIMEOUT).Should(Exit(0))
-
-			return session.Buffer()
-		}
-
-		It("defaults to $HOME as the remote working directory", func() {
-			output := runSftp(strings.NewReader("pwd\n"))
-			Eventually(output, DEFAULT_TIMEOUT).Should(Say("working directory: /home/vcap"))
-		})
-
-		It("can send and receive files over sftp", func() {
-			input := &bytes.Buffer{}
-			input.WriteString("mkdir files\n")
-			input.WriteString("cd files\n")
-			input.WriteString("lcd " + sourceDir + "\n")
-			input.WriteString("put " + generatedFileName + "\n")
-			input.WriteString("lcd " + targetDir + "\n")
-			input.WriteString("get " + generatedFileName + "\n")
-
-			runSftp(input)
-
-			compareDir(sourceDir, targetDir)
-		})
-	})
 })
-
-func sendPassword(pty *os.File, password string) {
-	passwordPrompt := []byte("password: ")
-
-	b := make([]byte, 1)
-	buf := []byte{}
-	done := make(chan struct{})
-
-	go func() {
-		defer GinkgoRecover()
-		for {
-			n, err := pty.Read(b)
-			Expect(n).To(Equal(1))
-			Expect(err).NotTo(HaveOccurred())
-			buf = append(buf, b[0])
-			if bytes.HasSuffix(buf, passwordPrompt) {
-				break
-			}
-		}
-		n, err := pty.Write([]byte(password))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(n).To(Equal(len(password)))
-
-		close(done)
-	}()
-
-	Eventually(done, DEFAULT_TIMEOUT).Should(BeClosed())
-}
 
 func enableSSH(appName string) {
 	Eventually(cf.Cf("enable-ssh", appName), DEFAULT_TIMEOUT).Should(Exit(0))
@@ -371,49 +224,4 @@ func sshProxyAddress() string {
 	Expect(err).NotTo(HaveOccurred())
 
 	return response.AppSSHEndpoint
-}
-
-func compareDir(actualDir, expectedDir string) {
-	actualDirInfo, err := os.Stat(actualDir)
-	Expect(err).NotTo(HaveOccurred())
-
-	expectedDirInfo, err := os.Stat(expectedDir)
-	Expect(err).NotTo(HaveOccurred())
-
-	Expect(actualDirInfo.Mode()).To(Equal(expectedDirInfo.Mode()))
-
-	actualFiles, err := ioutil.ReadDir(actualDir)
-	Expect(err).NotTo(HaveOccurred())
-
-	expectedFiles, err := ioutil.ReadDir(actualDir)
-	Expect(err).NotTo(HaveOccurred())
-
-	Expect(len(actualFiles)).To(Equal(len(expectedFiles)))
-	for i, actualFile := range actualFiles {
-		expectedFile := expectedFiles[i]
-		if actualFile.IsDir() {
-			compareDir(filepath.Join(actualDir, actualFile.Name()), filepath.Join(expectedDir, expectedFile.Name()))
-		} else {
-			compareFile(filepath.Join(actualDir, actualFile.Name()), filepath.Join(expectedDir, expectedFile.Name()))
-		}
-	}
-}
-
-func compareFile(actualFile, expectedFile string) {
-	actualFileInfo, err := os.Stat(actualFile)
-	Expect(err).NotTo(HaveOccurred())
-
-	expectedFileInfo, err := os.Stat(expectedFile)
-	Expect(err).NotTo(HaveOccurred())
-
-	Expect(actualFileInfo.Mode()).To(Equal(expectedFileInfo.Mode()))
-	Expect(actualFileInfo.Size()).To(Equal(expectedFileInfo.Size()))
-
-	actualContents, err := ioutil.ReadFile(actualFile)
-	Expect(err).NotTo(HaveOccurred())
-
-	expectedContents, err := ioutil.ReadFile(expectedFile)
-	Expect(err).NotTo(HaveOccurred())
-
-	Expect(actualContents).To(Equal(expectedContents))
 }
